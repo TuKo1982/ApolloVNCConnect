@@ -193,7 +193,7 @@ int main(void) {
             get(strPass, MUIA_String_Contents, &p);
             get(cycFmt, MUIA_Cycle_Active, &idxFmt);
 
-            sprintf(cmd, "Run <>NIL: ApolloVNC %s %s %s", h, ColorFormats[idxFmt], p);
+            sprintf(cmd, "Run <>NIL: ApolloVNCClient %s %s %s", h, ColorFormats[idxFmt], p);
             Execute((STRPTR)cmd, 0, 0);
         }
         else if (res == ID_SAVE) {
