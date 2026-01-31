@@ -7,6 +7,7 @@
 #include <stdio.h>
 #include <string.h>
 
+/* Compatibilité GCC 2.95 */
 #ifndef IPTR
 typedef unsigned long IPTR;
 #endif
@@ -17,33 +18,58 @@ typedef unsigned long IPTR;
 
 struct Library *MUIMasterBase = NULL;
 
-/* Deux IDs distincts */
 #define ID_CONNECT 1001
 #define ID_SAVE    1002
 
+/* * Nouvelle fonction de sauvegarde 
+ * Format: CLÉ=VALEUR
+ */
 static void SavePrefs(STRPTR host, STRPTR user, STRPTR pass) {
-    BPTR fh = Open("ENVARC:ApolloVNC.prefs", MODE_NEWFILE);
+    BPTR fh = Open("S:apollovnc.prefs", MODE_NEWFILE);
     if (fh) {
-        FPuts(fh, host); FPuts(fh, "\n");
-        FPuts(fh, user); FPuts(fh, "\n");
-        FPuts(fh, pass); FPuts(fh, "\n");
+        /* On écrit explicitement les clés suivies des valeurs */
+        FPuts(fh, "SERVER=");   FPuts(fh, host); FPuts(fh, "\n");
+        FPuts(fh, "PASSWORD="); FPuts(fh, pass); FPuts(fh, "\n"); /* Attention à l'ordre demandé */
+        FPuts(fh, "USERNAME="); FPuts(fh, user); FPuts(fh, "\n");
         Close(fh);
     }
 }
 
+/* * Nouvelle fonction de chargement 
+ * Elle parse le fichier ligne par ligne pour trouver les clés.
+ */
 static void LoadPrefs(STRPTR host, STRPTR user, STRPTR pass) {
-    BPTR fh = Open("ENVARC:ApolloVNC.prefs", MODE_OLDFILE);
+    BPTR fh = Open("S:apollovnc.prefs", MODE_OLDFILE);
+    char line[256]; /* Buffer pour lire une ligne complète */
+
+    /* Valeurs par défaut vides */
+    host[0] = 0;
+    user[0] = 0;
+    pass[0] = 0;
+
     if (fh) {
-        FGets(fh, host, 128); host[strcspn(host, "\r\n")] = 0;
-        FGets(fh, user, 128); user[strcspn(user, "\r\n")] = 0;
-        FGets(fh, pass, 128); pass[strcspn(pass, "\r\n")] = 0;
+        while (FGets(fh, line, 256)) {
+            /* Nettoyage du saut de ligne à la fin */
+            line[strcspn(line, "\r\n")] = 0;
+
+            /* Comparaison du début de la ligne et extraction de la valeur */
+            if (strncmp(line, "SERVER=", 7) == 0) {
+                strcpy(host, line + 7); /* Copie ce qui est après "SERVER=" */
+            } 
+            else if (strncmp(line, "PASSWORD=", 9) == 0) {
+                strcpy(pass, line + 9); /* Copie ce qui est après "PASSWORD=" */
+            }
+            else if (strncmp(line, "USERNAME=", 9) == 0) {
+                strcpy(user, line + 9); /* Copie ce qui est après "USERNAME=" */
+            }
+        }
         Close(fh);
     }
 }
 
 int main(void) {
     Object *app, *win, *strHost, *strUser, *strPass;
-    Object *btnConnect, *btnSave; 
+    Object *btnConnect, *btnSave;
     
     char bufHost[128] = "", bufUser[128] = "", bufPass[128] = "";
     char cmd[512];
@@ -57,16 +83,15 @@ int main(void) {
     LoadPrefs(bufHost, bufUser, bufPass);
 
     app = ApplicationObject,
-        MUIA_Application_Title,   (IPTR)"ApolloVNC Prefs",
+        MUIA_Application_Title,   (IPTR)"ApolloVNC Launcher",
         MUIA_Application_Base,    (IPTR)"APVNC",
         
         SubWindow, win = WindowObject,
-            MUIA_Window_Title, (IPTR)"ApolloVNC Prefs",
+            MUIA_Window_Title, (IPTR)"ApolloVNC Connect",
             MUIA_Window_ID,    (IPTR)MAKE_ID('V','N','C','L'),
             MUIA_Window_RootObject, VGroup,
                 MUIA_Background, MUII_GroupBack,
 
-                /* Champs de saisie */
                 Child, GroupObject,
                     MUIA_Group_Columns, 2,
                     
@@ -83,9 +108,8 @@ int main(void) {
                     End,
                 End,
 
-                /* Groupe horizontal pour les boutons */
                 Child, GroupObject,
-                    MUIA_Group_Horiz, TRUE, /* Alignement horizontal */
+                    MUIA_Group_Horiz, TRUE,
                     Child, btnConnect = MUI_MakeObject(MUIO_Button, (IPTR)"_Connect"),
                     Child, btnSave    = MUI_MakeObject(MUIO_Button, (IPTR)"_Save"),
                 End,
@@ -95,15 +119,12 @@ int main(void) {
 
     if (!app) { CloseLibrary(MUIMasterBase); return 20; }
 
-    /* Notifications - Fermeture */
     DoMethod(win, MUIM_Notify, MUIA_Window_CloseRequest, TRUE, (IPTR)app, 2, 
              MUIM_Application_ReturnID, MUIV_Application_ReturnID_Quit);
              
-    /* Notifications - Bouton Connect */
     DoMethod(btnConnect, MUIM_Notify, MUIA_Pressed, FALSE, (IPTR)app, 2, 
              MUIM_Application_ReturnID, ID_CONNECT);
 
-    /* Notifications - Bouton Save */
     DoMethod(btnSave, MUIM_Notify, MUIA_Pressed, FALSE, (IPTR)app, 2, 
              MUIM_Application_ReturnID, ID_SAVE);
 
@@ -116,23 +137,20 @@ int main(void) {
             running = FALSE;
         }
         else if (res == ID_CONNECT) {
-            /* Action Connect : On lit les champs et on lance */
             get(strHost, MUIA_String_Contents, &h);
             get(strUser, MUIA_String_Contents, &u);
             get(strPass, MUIA_String_Contents, &p);
 
+            /* Lancement de la commande : ApolloVNC IP USER PASS */
             sprintf(cmd, "ApolloVNC %s %s %s", h, u, p);
             Execute((STRPTR)cmd, 0, 0);
         }
         else if (res == ID_SAVE) {
-            /* Action Save : On lit les champs et on sauve */
             get(strHost, MUIA_String_Contents, &h);
             get(strUser, MUIA_String_Contents, &u);
             get(strPass, MUIA_String_Contents, &p);
 
             SavePrefs(h, u, p);
-            
-            /* Petit feedback visuel (optionnel) : beep */
             DisplayBeep(NULL); 
         }
 
