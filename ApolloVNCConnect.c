@@ -21,46 +21,58 @@ struct Library *MUIMasterBase = NULL;
 #define ID_CONNECT 1001
 #define ID_SAVE    1002
 
-/* * Nouvelle fonction de sauvegarde 
- * Format: CLÉ=VALEUR
- */
-static void SavePrefs(STRPTR host, STRPTR user, STRPTR pass) {
-    BPTR fh = Open("S:apollovnc.prefs", MODE_NEWFILE);
+/* Liste des formats de couleurs pour le Cycle Gadget */
+static const char *ColorFormats[] = {
+    "YUV4", "YUV4N", "YUV5", "YUV6", "YUV7", "YUV8",
+    "RGB8", "RGB9", "RGB12", "RGB16",
+    NULL
+};
+
+/* Fonction utilitaire pour retrouver l'index (0..9) à partir du texte lu dans le fichier */
+static ULONG GetFormatIndex(STRPTR fmtName) {
+    int i = 0;
+    if (!fmtName || !fmtName[0]) return 0; /* Par défaut YUV4 (index 0) */
+
+        while (ColorFormats[i]) {
+            if (strcmp(ColorFormats[i], fmtName) == 0) return i;
+            i++;
+        }
+        return 0; /* Si non trouvé, retour à YUV4 */
+}
+
+/* Sauvegarde : On passe maintenant le format (chaine) au lieu du user */
+static void SavePrefs(STRPTR host, STRPTR fmt, STRPTR pass) {
+    BPTR fh = Open("ENVARC:ApolloVNC.prefs", MODE_NEWFILE);
     if (fh) {
-        /* On écrit explicitement les clés suivies des valeurs */
         FPuts(fh, "SERVER=");   FPuts(fh, host); FPuts(fh, "\n");
-        FPuts(fh, "PASSWORD="); FPuts(fh, pass); FPuts(fh, "\n"); /* Attention à l'ordre demandé */
-        FPuts(fh, "USERNAME="); FPuts(fh, user); FPuts(fh, "\n");
+        FPuts(fh, "PASSWORD="); FPuts(fh, pass); FPuts(fh, "\n");
+        FPuts(fh, "COLORFMT="); FPuts(fh, fmt);  FPuts(fh, "\n"); /* Changement de clé */
         Close(fh);
     }
 }
 
-/* * Nouvelle fonction de chargement 
- * Elle parse le fichier ligne par ligne pour trouver les clés.
- */
-static void LoadPrefs(STRPTR host, STRPTR user, STRPTR pass) {
-    BPTR fh = Open("S:apollovnc.prefs", MODE_OLDFILE);
-    char line[256]; /* Buffer pour lire une ligne complète */
+/* Chargement : On lit COLORFMT au lieu de USERNAME */
+static void LoadPrefs(STRPTR host, STRPTR fmt, STRPTR pass) {
+    BPTR fh = Open("ENVARC:ApolloVNC.prefs", MODE_OLDFILE);
+    char line[256];
 
-    /* Valeurs par défaut vides */
+    /* Valeurs par défaut */
     host[0] = 0;
-    user[0] = 0;
+    fmt[0]  = 0; /* Sera converti en index 0 (YUV4) par GetFormatIndex si vide */
     pass[0] = 0;
 
     if (fh) {
         while (FGets(fh, line, 256)) {
-            /* Nettoyage du saut de ligne à la fin */
             line[strcspn(line, "\r\n")] = 0;
 
-            /* Comparaison du début de la ligne et extraction de la valeur */
             if (strncmp(line, "SERVER=", 7) == 0) {
-                strcpy(host, line + 7); /* Copie ce qui est après "SERVER=" */
-            } 
-            else if (strncmp(line, "PASSWORD=", 9) == 0) {
-                strcpy(pass, line + 9); /* Copie ce qui est après "PASSWORD=" */
+                strcpy(host, line + 7);
             }
-            else if (strncmp(line, "USERNAME=", 9) == 0) {
-                strcpy(user, line + 9); /* Copie ce qui est après "USERNAME=" */
+            else if (strncmp(line, "PASSWORD=", 9) == 0) {
+                strcpy(pass, line + 9);
+            }
+            else if (strncmp(line, "COLORFMT=", 9) == 0) {
+                strcpy(fmt, line + 9);
             }
         }
         Close(fh);
@@ -68,90 +80,107 @@ static void LoadPrefs(STRPTR host, STRPTR user, STRPTR pass) {
 }
 
 int main(void) {
-    Object *app, *win, *strHost, *strUser, *strPass;
+    /* Déclarations */
+    Object *app, *win, *strHost, *cycFmt, *strPass;
     Object *btnConnect, *btnSave;
-    
-    char bufHost[128] = "", bufUser[128] = "", bufPass[128] = "";
+
+    char bufHost[128] = "", bufFmt[128] = "", bufPass[128] = "";
     char cmd[512];
-    STRPTR h, u, p;
+    STRPTR h, p;
+    ULONG idxFmt; /* Pour stocker l'index du cycle gadget */
+    ULONG initFmtIdx = 0;
+
     ULONG signals = 0;
     ULONG res;
     BOOL running = TRUE;
 
     if (!(MUIMasterBase = OpenLibrary("muimaster.library", 19))) return 20;
 
-    LoadPrefs(bufHost, bufUser, bufPass);
+    /* Chargement des prefs */
+    LoadPrefs(bufHost, bufFmt, bufPass);
+    /* Conversion du texte (ex: "RGB16") en index (ex: 9) pour l'initialisation du GUI */
+    initFmtIdx = GetFormatIndex(bufFmt);
 
     app = ApplicationObject,
-        MUIA_Application_Title,   (IPTR)"ApolloVNC Launcher",
-        MUIA_Application_Base,    (IPTR)"APVNC",
-        
-        SubWindow, win = WindowObject,
-            MUIA_Window_Title, (IPTR)"ApolloVNC Connect",
-            MUIA_Window_ID,    (IPTR)MAKE_ID('V','N','C','L'),
-            MUIA_Window_RootObject, VGroup,
-                MUIA_Background, MUII_GroupBack,
+    MUIA_Application_Title,   (IPTR)"ApolloVNC Connect",
+    MUIA_Application_Base,    (IPTR)"APVNC",
 
-                Child, GroupObject,
-                    MUIA_Group_Columns, 2,
-                    
-                    Child, TextObject, MUIA_Text_Contents, (IPTR)"Host IP:", End,
-                    Child, strHost = StringObject, MUIA_String_Contents, (IPTR)bufHost, End,
-                    
-                    Child, TextObject, MUIA_Text_Contents, (IPTR)"User:", End,
-                    Child, strUser = StringObject, MUIA_String_Contents, (IPTR)bufUser, End,
-                    
-                    Child, TextObject, MUIA_Text_Contents, (IPTR)"Password:", End,
-                    Child, strPass = StringObject, 
-                        MUIA_String_Contents, (IPTR)bufPass,
-                        MUIA_String_Secret, TRUE,
-                    End,
-                End,
+    SubWindow, win = WindowObject,
+    MUIA_Window_Title, (IPTR)"ApolloVNC Connect",
+    MUIA_Window_ID,    (IPTR)MAKE_ID('V','N','C','L'),
+    MUIA_Window_RootObject, VGroup,
+    MUIA_Background, MUII_GroupBack,
 
-                Child, GroupObject,
-                    MUIA_Group_Horiz, TRUE,
-                    Child, btnConnect = MUI_MakeObject(MUIO_Button, (IPTR)"_Connect"),
-                    Child, btnSave    = MUI_MakeObject(MUIO_Button, (IPTR)"_Save"),
-                End,
-            End,
-        End,
+    Child, GroupObject,
+    MUIA_Group_Columns, 2,
+
+    Child, TextObject, MUIA_Text_Contents, (IPTR)"Host IP:", End,
+    Child, strHost = StringObject, MUIA_String_Contents, (IPTR)bufHost, End,
+
+    /* Remplacement du champ texte USER par un Cycle Gadget COLORFMT */
+    Child, TextObject, MUIA_Text_Contents, (IPTR)"Color Format:", End,
+    Child, cycFmt = CycleObject,
+    MUIA_Cycle_Entries, (IPTR)ColorFormats,
+    MUIA_Cycle_Active,  (IPTR)initFmtIdx,
+    End,
+
+    Child, TextObject, MUIA_Text_Contents, (IPTR)"Password:", End,
+    Child, strPass = StringObject,
+    MUIA_String_Contents, (IPTR)bufPass,
+    MUIA_String_Secret, TRUE,
+    End,
+    End,
+
+    Child, GroupObject,
+    MUIA_Group_Horiz, TRUE,
+    Child, btnConnect = MUI_MakeObject(MUIO_Button, (IPTR)"_Connect"),
+    Child, btnSave    = MUI_MakeObject(MUIO_Button, (IPTR)"_Save"),
+    End,
+    End,
+    End,
     End;
 
     if (!app) { CloseLibrary(MUIMasterBase); return 20; }
 
-    DoMethod(win, MUIM_Notify, MUIA_Window_CloseRequest, TRUE, (IPTR)app, 2, 
+    DoMethod(win, MUIM_Notify, MUIA_Window_CloseRequest, TRUE, (IPTR)app, 2,
              MUIM_Application_ReturnID, MUIV_Application_ReturnID_Quit);
-             
-    DoMethod(btnConnect, MUIM_Notify, MUIA_Pressed, FALSE, (IPTR)app, 2, 
+
+    DoMethod(btnConnect, MUIM_Notify, MUIA_Pressed, FALSE, (IPTR)app, 2,
              MUIM_Application_ReturnID, ID_CONNECT);
 
-    DoMethod(btnSave, MUIM_Notify, MUIA_Pressed, FALSE, (IPTR)app, 2, 
+    DoMethod(btnSave, MUIM_Notify, MUIA_Pressed, FALSE, (IPTR)app, 2,
              MUIM_Application_ReturnID, ID_SAVE);
 
     set(win, MUIA_Window_Open, TRUE);
 
     while (running) {
         res = DoMethod(app, MUIM_Application_NewInput, (IPTR)&signals);
-        
+
         if (res == MUIV_Application_ReturnID_Quit) {
             running = FALSE;
         }
         else if (res == ID_CONNECT) {
             get(strHost, MUIA_String_Contents, &h);
-            get(strUser, MUIA_String_Contents, &u);
             get(strPass, MUIA_String_Contents, &p);
 
-            /* Lancement de la commande : ApolloVNC IP USER PASS */
-            sprintf(cmd, "ApolloVNC %s %s %s", h, u, p);
+            /* Récupération de l'index sélectionné dans la liste déroulante */
+            get(cycFmt, MUIA_Cycle_Active, &idxFmt);
+
+            /* ApolloVNC IP USER PASS -> Ici USER est remplacé par COLORFMT */
+            /* On utilise ColorFormats[idxFmt] pour récupérer la chaine (ex: "RGB16") */
+            sprintf(cmd, "ApolloVNC %s %s %s", h, ColorFormats[idxFmt], p);
+
             Execute((STRPTR)cmd, 0, 0);
         }
         else if (res == ID_SAVE) {
             get(strHost, MUIA_String_Contents, &h);
-            get(strUser, MUIA_String_Contents, &u);
             get(strPass, MUIA_String_Contents, &p);
 
-            SavePrefs(h, u, p);
-            DisplayBeep(NULL); 
+            /* Récupération de l'index pour la sauvegarde */
+            get(cycFmt, MUIA_Cycle_Active, &idxFmt);
+
+            SavePrefs(h, (STRPTR)ColorFormats[idxFmt], p);
+            DisplayBeep(NULL);
         }
 
         if (running && signals) {
